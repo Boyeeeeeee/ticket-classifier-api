@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+training/output/
+*.csv
+.env
+.DS_Store
+training/consumer-complaint-database.zip
+training/consumer-complaint-database/
