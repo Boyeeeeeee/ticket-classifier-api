@@ -4,30 +4,31 @@ Fine-tunes DistilBERT on the CFPB Consumer Complaint Database.
 Run this in an environment with internet access and (ideally) a GPU —
 Colab is the easiest option. Not meant to run inside a restricted sandbox.
 
-Before running:
-1. Download the dataset:
-     curl -o complaints.csv.zip "https://files.consumerfinance.gov/ccdb/complaints.csv.zip"
-     unzip complaints.csv.zip
-   This produces complaints.csv (several GB, millions of rows).
-2. Place complaints.csv in this training/ directory, or update RAW_CSV_PATH below.
-3. pip install -r ../requirements.txt
+Data and outputs live on Google Drive (not /content), so a Colab
+runtime disconnect/reset doesn't lose the dataset or in-progress
+checkpoints. Mount Drive first:
+    from google.colab import drive
+    drive.mount('/content/drive')
 
 What this script does:
 1. Loads the CFPB CSV, keeps only rows with a non-empty complaint narrative.
-2. Filters to the NUM_TOP_CATEGORIES most frequent "Product" categories, to
-   keep the label space clean and each class well-represented.
-3. Subsamples per class (SAMPLES_PER_CLASS) so training is fast and balanced,
-   rather than dominated by whichever categories happen to have millions of
-   complaints.
-4. Cleans text (strips the "XXXX" redaction placeholders CFPB uses for PII).
-5. Stratified train/val/test split.
-6. Tokenizes with the DistilBERT tokenizer.
-7. Fine-tunes DistilBertForSequenceClassification via Hugging Face Trainer.
-8. Evaluates on the held-out test set: accuracy, macro-F1, per-class
+2. Merges known near-duplicate "Product" labels from different CFPB
+   taxonomy years (e.g. two separate credit-reporting labels) BEFORE
+   picking top categories, so the model isn't forced to distinguish
+   near-identical classes and top-N isn't wasted on duplicates.
+3. Filters to the NUM_TOP_CATEGORIES most frequent "Product" categories.
+4. Subsamples per class (SAMPLES_PER_CLASS) so training is fast and balanced.
+5. Cleans text (strips the "XXXX" redaction placeholders CFPB uses for PII).
+6. Stratified train/val/test split.
+7. Tokenizes with the DistilBERT tokenizer.
+8. Fine-tunes DistilBertForSequenceClassification via Hugging Face Trainer,
+   saving checkpoints to Drive and resuming from the latest one if present.
+9. Evaluates on the held-out test set: accuracy, macro-F1, per-class
    precision/recall, confusion matrix.
-9. Saves the final model + tokenizer + label list to training/output/final_model/.
+10. Saves the final model + tokenizer + label list to Drive.
 """
 
+import glob
 import json
 import os
 import re
@@ -51,14 +52,33 @@ from transformers import (
 )
 
 MODEL_CHECKPOINT = "distilbert-base-uncased"
-RAW_CSV_PATH = "consumer-complaint-database/rows.csv"
-OUTPUT_DIR = "training/output"
+
+# --- Drive-backed paths (survive a Colab runtime reset) ---
+DRIVE_ROOT = "/content/drive/MyDrive/ticket-classifier-api"
+RAW_CSV_PATH = os.path.join(DRIVE_ROOT, "rows.csv")
+OUTPUT_DIR = os.path.join(DRIVE_ROOT, "training-output")
 FINAL_MODEL_DIR = os.path.join(OUTPUT_DIR, "final_model")
+CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 
 NUM_TOP_CATEGORIES = 8       # keep the label space manageable
 SAMPLES_PER_CLASS = 3000     # cap per class so training is balanced and fast
 MAX_LENGTH = 256
 RANDOM_STATE = 42
+
+# Known near-duplicate "Product" labels across different CFPB taxonomy
+# years/revisions. Right side is the canonical label kept after merging.
+# TODO: verify/extend this against the actual unique values in your CSV
+# (run df['Product'].unique() and compare) before the real training run.
+LABEL_MERGE_MAP = {
+    "Credit reporting": "Credit reporting, credit repair services, or other personal consumer reports",
+    "Credit card": "Credit card or prepaid card",
+    "Prepaid card": "Credit card or prepaid card",
+    "Payday loan": "Payday loan, title loan, or personal loan",
+    "Payday loan, title loan, personal loan, or advance loan": "Payday loan, title loan, or personal loan",
+    "Money transfers": "Money transfer, virtual currency, or money service",
+    "Virtual currency": "Money transfer, virtual currency, or money service",
+    "Bank account or service": "Checking or savings account",
+}
 
 
 def clean_text(text: str) -> str:
@@ -69,8 +89,9 @@ def clean_text(text: str) -> str:
 
 
 def load_and_prepare_data():
-    """Load the CFPB CSV, filter to top categories, balance, clean, and
-    split into stratified train/val/test sets."""
+    """Load the CFPB CSV, merge near-duplicate labels, filter to top
+    categories, balance, clean, and split into stratified train/val/test
+    sets."""
     print(f"Loading {RAW_CSV_PATH} ...")
     df = pd.read_csv(
         RAW_CSV_PATH,
@@ -80,6 +101,18 @@ def load_and_prepare_data():
     df = df.rename(columns={"Consumer complaint narrative": "text", "Product": "label"})
     df = df.dropna(subset=["text", "label"])
     df = df[df["text"].str.strip().str.len() > 0]
+
+    # Merge near-duplicate labels BEFORE picking top categories, so we
+    # don't waste two of the NUM_TOP_CATEGORIES slots on labels that are
+    # really the same category under different taxonomy years.
+    before_counts = df["label"].value_counts()
+    df["label"] = df["label"].replace(LABEL_MERGE_MAP)
+    after_counts = df["label"].value_counts()
+    merged = {k: v for k, v in LABEL_MERGE_MAP.items() if k in before_counts.index}
+    if merged:
+        print(f"Merged {len(merged)} near-duplicate label(s): {merged}")
+    print("Label counts after merge:")
+    print(after_counts)
 
     top_categories = df["label"].value_counts().nlargest(NUM_TOP_CATEGORIES).index
     df = df[df["label"].isin(top_categories)]
@@ -136,6 +169,19 @@ def compute_metrics(eval_pred):
     }
 
 
+def _latest_checkpoint():
+    """Return the most recent checkpoint dir under CHECKPOINT_DIR, if any,
+    so training can resume after a disconnect instead of restarting."""
+    if not os.path.isdir(CHECKPOINT_DIR):
+        return None
+    ckpts = glob.glob(os.path.join(CHECKPOINT_DIR, "checkpoint-*"))
+    if not ckpts:
+        return None
+    latest = max(ckpts, key=lambda p: int(p.rsplit("-", 1)[-1]))
+    print(f"Found existing checkpoint, will resume from: {latest}")
+    return latest
+
+
 def train():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -155,7 +201,7 @@ def train():
     )
 
     training_args = TrainingArguments(
-        output_dir=os.path.join(OUTPUT_DIR, "checkpoints"),
+        output_dir=CHECKPOINT_DIR,
         eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=2e-5,
@@ -167,6 +213,7 @@ def train():
         metric_for_best_model="macro_f1",
         logging_steps=50,
         fp16=torch.cuda.is_available(),
+        save_total_limit=2,  # keep Drive usage bounded
     )
 
     trainer = Trainer(
@@ -178,7 +225,8 @@ def train():
     )
 
     print("Starting training...")
-    trainer.train()
+    resume_from = _latest_checkpoint()
+    trainer.train(resume_from_checkpoint=resume_from)
 
     print("\nEvaluating on held-out test set...")
     test_output = trainer.predict(test_ds)
