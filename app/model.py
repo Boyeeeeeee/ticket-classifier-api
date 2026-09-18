@@ -1,17 +1,20 @@
 """
 Loads the fine-tuned classifier and exposes a simple predict() function.
 
-TODO (after training/train.py has been run):
-- point MODEL_DIR at the saved model directory (e.g. "training/output/final_model")
-- fill in LABELS with the actual category names in the order the model was trained on
+Model lives on the Hugging Face Hub (see training/train.py + the push-to-hub
+step in the README) rather than a local path, so the API doesn't need the
+~250MB model files committed to this repo or copied onto the deploy target
+by hand.
 """
+import json
 from functools import lru_cache
 
 import torch
+from huggingface_hub import hf_hub_download
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-MODEL_DIR = "training/output/final_model"  # TODO: update after training
-LABELS: list[str] = []  # TODO: fill in with actual class names, in label-index order
+# TODO: replace with your actual HF Hub repo id, e.g. "yourname/ticket-classifier-distilbert"
+MODEL_DIR = "Deboyeeeeeee/ticket-classifier-distilbert"
 
 
 class TicketClassifier:
@@ -19,15 +22,21 @@ class TicketClassifier:
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_dir)
         self.model.eval()
-        self.labels = LABELS or [
-            f"label_{i}" for i in range(self.model.config.num_labels)
-        ]
+
+        # labels.json isn't a standard HF file, so fetch it explicitly.
+        labels_path = hf_hub_download(repo_id=model_dir, filename="labels.json")
+        with open(labels_path) as f:
+            self.labels = json.load(f)
 
     @torch.no_grad()
     def predict(self, text: str) -> list[tuple[str, float]]:
         inputs = self.tokenizer(
             text, return_tensors="pt", truncation=True, max_length=256
         )
+        # DistilBERT has no segment embeddings, so its forward() doesn't
+        # accept token_type_ids even though some tokenizer versions include
+        # it by default. Drop it if present rather than erroring.
+        inputs.pop("token_type_ids", None)
         logits = self.model(**inputs).logits
         probs = torch.softmax(logits, dim=-1)[0].tolist()
         ranked = sorted(zip(self.labels, probs), key=lambda x: x[1], reverse=True)
