@@ -59,7 +59,22 @@ curl -X POST http://localhost:8000/predict \
 
 ## Deployment
 
-TODO: deployed at <live URL> (Render/Fly.io/HF Spaces)
+## Deployment
+
+Live at: **https://ticket-classifier-api-ecqf.onrender.com**
+
+- Interactive API docs: https://ticket-classifier-api-ecqf.onrender.com/docs
+- Health check: https://ticket-classifier-api-ecqf.onrender.com/health
+
+Deployed on [Render](https://render.com) (free tier, Docker-based Web Service),
+auto-deploying from the `main` branch on every push. The model itself is
+downloaded from the Hugging Face Hub at container startup rather than baked
+into the image, keeping the Docker image small and the model updatable
+independently of the API code.
+
+> **Note:** the free tier spins down after inactivity, so the first request
+> after a period of no traffic can take 30-50+ seconds while the service
+> wakes up and re-downloads the model. Subsequent requests are fast.
 
 ## Results
 
