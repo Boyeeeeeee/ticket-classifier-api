@@ -6,10 +6,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
-# The trained model is copied in at build time once training is done.
-# For a smaller image, consider downloading the model at container startup
-# from a model registry (e.g. Hugging Face Hub) instead of baking it in.
-COPY training/output/final_model/ ./training/output/final_model/
+
+# The trained model is no longer baked into the image. app/model.py
+# downloads it from the Hugging Face Hub at process startup
+# (see MODEL_DIR in app/model.py), so the image stays small and the
+# model can be updated by pushing a new version to the Hub without
+# rebuilding this container.
+#
+
 
 EXPOSE 8000
 

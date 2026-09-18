@@ -1,11 +1,4 @@
-"""
-Loads the fine-tuned classifier and exposes a simple predict() function.
 
-Model lives on the Hugging Face Hub (see training/train.py + the push-to-hub
-step in the README) rather than a local path, so the API doesn't need the
-~250MB model files committed to this repo or copied onto the deploy target
-by hand.
-"""
 import json
 from functools import lru_cache
 

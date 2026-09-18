@@ -1,32 +1,4 @@
-"""
-Fine-tunes DistilBERT on the CFPB Consumer Complaint Database.
 
-Run this in an environment with internet access and (ideally) a GPU —
-Colab is the easiest option. Not meant to run inside a restricted sandbox.
-
-Data and outputs live on Google Drive (not /content), so a Colab
-runtime disconnect/reset doesn't lose the dataset or in-progress
-checkpoints. Mount Drive first:
-    from google.colab import drive
-    drive.mount('/content/drive')
-
-What this script does:
-1. Loads the CFPB CSV, keeps only rows with a non-empty complaint narrative.
-2. Merges known near-duplicate "Product" labels from different CFPB
-   taxonomy years (e.g. two separate credit-reporting labels) BEFORE
-   picking top categories, so the model isn't forced to distinguish
-   near-identical classes and top-N isn't wasted on duplicates.
-3. Filters to the NUM_TOP_CATEGORIES most frequent "Product" categories.
-4. Subsamples per class (SAMPLES_PER_CLASS) so training is fast and balanced.
-5. Cleans text (strips the "XXXX" redaction placeholders CFPB uses for PII).
-6. Stratified train/val/test split.
-7. Tokenizes with the DistilBERT tokenizer.
-8. Fine-tunes DistilBertForSequenceClassification via Hugging Face Trainer,
-   saving checkpoints to Drive and resuming from the latest one if present.
-9. Evaluates on the held-out test set: accuracy, macro-F1, per-class
-   precision/recall, confusion matrix.
-10. Saves the final model + tokenizer + label list to Drive.
-"""
 
 import glob
 import json
